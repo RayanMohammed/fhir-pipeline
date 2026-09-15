@@ -118,6 +118,7 @@ Swap `POOL_MAX_SIZE` and `DATABASE_URL` (direct connection vs. the transaction-p
 | `.github/workflows/scheduled-ingestion.yml` | Passive, scheduled ingestion -- a cron-triggered Actions job that generates a fresh batch of synthetic patients via Synthea and ingests them automatically, capped and lineage-tagged. See "Scheduled, unattended ingestion" below. |
 | `scripts/check_ingestion_cap.py` | Decides whether a scheduled run should do anything: queries the real patient count and computes a capped, randomized batch size. |
 | `scripts/stage_synthea_batch.py` | Packages a scheduled run's Synthea output into an archive and uploads it to R2. |
+| `scripts/validate_extraction_coverage.py` | Independent, second-opinion reconciliation: re-derives what extraction should have produced directly from a real archive's raw FHIR JSON and compares it against `extract_clinical_data()`'s actual output. See "Verifying extraction completeness, independently" below. |
 | `docker-compose.yml`, `api/Dockerfile`, `dashboard/Dockerfile` | Runs the whole stack (a disposable local Postgres, the API, the dashboard) with one command -- see "Running it locally" below. |
 
 ## Design decisions worth explaining
@@ -132,13 +133,15 @@ Swap `POOL_MAX_SIZE` and `DATABASE_URL` (direct connection vs. the transaction-p
 
 **A shared query is a shared contract.** `UPSERT_QUERY` in `shared/queries.py` is called from two places: the batch worker and the API's `/api/patients/ingest` endpoint. Adding an 11th column (`ingestion_run_id`) for the scheduled pipeline meant updating the batch worker's call site -- and it was easy to stop there, since that's the one actually being changed for the new feature. The API endpoint's `record_tuple` was still building 10 values, and CI caught it immediately: every request through that endpoint started failing with `asyncpg.exceptions._base.InterfaceError: the server expects 11 arguments for this query, 10 were passed`, because `test_ingest_valid_bundle` actually exercises that endpoint on every push. The fix was one line (pass `None`, since single-bundle API ingestion isn't a tagged scheduled run), but the lesson isn't about this one query -- it's that a query shared across call sites is a contract those call sites all depend on, and changing it means checking every place that calls it, not just the one you're actively working on.
 
+**A measured decision to cap the dataset at 2,000 patients, not 10,000.** `SyntheaGeneratorNotebook.ipynb` documents the actual generation process behind the original historical batch -- it started at 10,000 synthetic patients, compressed into the same `.tar.gz` format the batch worker consumes. The compressed archive's actual storage footprint at that scale was the reason the batch was cut down to 2,000 instead: a deliberate call to keep a purposeful, storage-conscious dataset rather than a bloated one accumulated just because generation was cheap and easy. It's the same instinct that later shaped the scheduled ingestion pipeline's hard 3,000-patient cap below -- know your actual constraint (Supabase's free-tier storage, in both cases) and design to it, rather than letting a dataset grow just because nothing stopped it.
+
 ## The connection-pooling investigation
 
 This is the part of the project I'd actually walk an interviewer through, because it has a real hypothesis, a controlled experiment, a corrected methodology, and raw output anyone can check for themselves in [`load-test-results/`](load-test-results/).
 
 **The question:** the API's database pool defaulted to a single connection (`max_size=1`) as a Supabase free-tier accommodation. How much does that actually cost under concurrent load, and does routing through Supabase's managed PgBouncer-based transaction pooler (as opposed to just raising the pool size on a direct connection) help further?
 
-**The method:** `POOL_MAX_SIZE` was made configurable via environment variable specifically so the pool size could change between runs without editing and reverting application code. Four Locust runs were captured, all at an identical load profile — 100 simulated users, ramped at 10/s, sustained for 60 seconds — hitting `GET /api/health` and `GET /api/patients`. Raw CSV exports and a self-contained HTML report for every run are committed in [`load-test-results/`](load-test-results/), not just summarized here.
+**The method:** `POOL_MAX_SIZE` was made configurable via environment variable specifically so the pool size could change between runs without editing and reverting application code. Four Locust runs were captured, all at an identical load profile — 100 simulated users, ramped at 10/s, sustained for 60 seconds — hitting `GET /api/health` and `GET /api/patients`. Raw CSV exports for every run are committed in [`load-test-results/`](load-test-results/), not just summarized here.
 
 | Configuration | Requests | Failures | Median | p99 | Throughput |
 |---|---|---|---|---|---|
@@ -196,6 +199,23 @@ Each scheduled run:
 The cap exists because this runs against Supabase's free tier, which caps storage and compute -- not because of any limit on how much synthetic data Synthea itself can generate. Once the count check reports no headroom left, the workflow still fires on its 4-hour schedule but exits right after the cap check -- the intended steady state once the campaign completes, not a failure.
 
 Verified with a real `workflow_dispatch` run against production, not just a syntax check -- Synthea generated a fresh batch, it landed in R2, and it upserted into Supabase with a real `ingestion_run_id` attached, all without anyone at a keyboard.
+
+## Verifying extraction completeness, independently
+
+Every upsert in this pipeline is defensive -- idempotent, transactional, dead-letter-queued on failure. But none of that protects against a different failure mode: `extract_clinical_data()` could return successfully while silently producing nothing for a resource it should have captured -- an unexpected LOINC code, a missing field, a bad date -- and every test in `tests/` would still pass, because they're written against the same assumptions the function itself makes. Idempotent writes protect the write stage; they say nothing about whether the right data reached that stage in the first place.
+
+`scripts/validate_extraction_coverage.py` closes that gap with an independent second opinion. It re-reads a real archive's raw FHIR JSON on its own -- with its own duplicated copy of the classification logic rather than importing from `shared/extraction.py`, so a bug in the real extraction code can't "agree with itself" here -- and checks every in-scope Observation and Condition against what `extract_clinical_data()` actually returned for the same bundle. That includes recomputing the exact `uuid.uuid5` formula used to derive blood-pressure component IDs, so a dropped systolic or diastolic reading shows up as a real mismatch rather than an assumption that it worked. It also flags misattribution -- a row landing under the wrong patient's ID -- which the write-side idempotency logic would never catch on its own, since a misattributed row still upserts cleanly.
+
+Run against the real, current 2,000-patient production archive:
+
+| Check | Result |
+|---|---|
+| In-scope Observations (height, weight, blood pressure) | 79,666 / 79,666 captured (100%) |
+| Conditions | 70,817 / 70,817 captured (100%) |
+| Misattributed rows | 0 |
+| Distinct out-of-scope LOINC codes seen | 234, across 912,307 resources -- real clinical data (medications, immunizations, procedures, and similar) this pipeline was never built to parse |
+
+A clean result doesn't make this check unnecessary -- it means the assumption every other test already relies on (that `extract_clinical_data()` handles the archive's actual real-world shape correctly, not just its fixtures) is now independently confirmed against real data instead of taken on faith. Full report and per-code breakdown: [`extraction-coverage-results/`](extraction-coverage-results/).
 
 ## Known limitations / what I'd do next
 

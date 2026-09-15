@@ -3,8 +3,8 @@
 Raw, unedited output from the connection-pooling investigation described in
 the main [README](../README.md#the-connection-pooling-investigation). Each
 run is a separate Locust CSV export (`_stats.csv`, `_stats_history.csv`,
-`_failures.csv`, `_exceptions.csv`) plus a self-contained HTML report you can
-open directly in a browser -- no server needed.
+`_failures.csv`, `_exceptions.csv`) -- the `Aggregated` row in each `_stats.csv`
+is the one actually cited in the main README's table.
 
 All four runs used the same load profile: 100 simulated users, ramped at
 10/second, sustained for 60 seconds, against a local `uvicorn` instance
@@ -20,5 +20,4 @@ All four runs used the same load profile: 100 simulated users, ramped at
 To reproduce: see the exact commands in the main README's connection-pooling
 section, or ask for the runbook again -- each run restarts `uvicorn` with a
 different `DATABASE_URL`/`POOL_MAX_SIZE` combination, then points Locust at
-it in headless mode with `--csv=load-test-results/<prefix>` and
-`--html=load-test-results/<prefix>.html`.
+it in headless mode with `--csv=load-test-results/<prefix>`.
