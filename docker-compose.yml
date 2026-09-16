@@ -37,6 +37,7 @@ services:
       DATABASE_URL: postgresql://clinical:clinical@db:5432/clinical_db
       API_KEY: ${API_KEY:-dev-key}
       POOL_MAX_SIZE: "10"
+      ALLOWED_ORIGINS: http://localhost:8501
     ports:
       - "8000:8000"
     depends_on:

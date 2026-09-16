@@ -34,6 +34,11 @@ logger = logging.getLogger("clinical_api")
 
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
+# Comma-separated list of allowed frontend origins. Defaults to the local
+# Streamlit dashboard's own origin -- deliberately not "*", since a wildcard
+# lets literally any website's JS read this API's responses from a logged-in
+# user's browser. Override via env var for a real deployed dashboard origin.
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:8501").split(",")
 # Defaults to 1 -- the Supabase free-tier accommodation from earlier. Overridable
 # via env var so a load-test experiment can compare pool sizes without editing
 # and reverting this file between runs.
@@ -74,7 +79,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],

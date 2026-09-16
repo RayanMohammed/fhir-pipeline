@@ -1,4 +1,5 @@
 import datetime
+import html
 import os
 
 import pandas as pd
@@ -158,6 +159,15 @@ def compute_age(birth_date_str: str) -> int:
     bd = datetime.date.fromisoformat(birth_date_str)
     today = datetime.date.today()
     return today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
+
+
+def e(value) -> str:
+    """Escapes a value for safe interpolation into raw HTML strings below.
+    Needed specifically for free-text fields (patient names, gender) that
+    ultimately come from user input via ManualPatientIntake -- everything
+    else interpolated in this file (BMI categories, formatted numbers, ages)
+    comes from a fixed set of values this code computes itself."""
+    return html.escape(str(value)) if value is not None else ""
 
 
 def bmi_badge(category: str | None) -> str:
@@ -327,7 +337,7 @@ with st.sidebar:
         st.markdown(
             f'<div class="patient-rail">'
             f'<div class="patient-rail-label">{_rail_label}</div>'
-            f'<div class="patient-rail-name">{_rail_patient["first_name"]} {_rail_patient["last_name"]}</div>'
+            f'<div class="patient-rail-name">{e(_rail_patient["first_name"])} {e(_rail_patient["last_name"])}</div>'
             f'<div class="patient-rail-meta">{_rail_age} yr &middot; born {_rail_patient["birth_date"]}</div>'
             f'</div>',
             unsafe_allow_html=True,
@@ -426,9 +436,9 @@ if view == "Home":
                 date_str = entry.get("observation_date") or ""
                 st.markdown(
                     f'<div class="activity-row">'
-                    f'<span class="activity-name">{name}</span>'
-                    f'<span class="activity-desc">{desc}: {value_str}</span>'
-                    f'<span class="activity-date">{date_str}</span>'
+                    f'<span class="activity-name">{e(name)}</span>'
+                    f'<span class="activity-desc">{e(desc)}: {e(value_str)}</span>'
+                    f'<span class="activity-date">{e(date_str)}</span>'
                     f'</div>',
                     unsafe_allow_html=True,
                 )
@@ -511,7 +521,7 @@ elif view == "Patient Chart":
             with tab_overview:
                 with st.container(border=True):
                     st.markdown(
-                        f'<div class="patient-name">{snap["first_name"]} {snap["last_name"]}</div>',
+                        f'<div class="patient-name">{e(snap["first_name"])} {e(snap["last_name"])}</div>',
                         unsafe_allow_html=True,
                     )
                     bmi_value = f"{snap['bmi']}" if snap["bmi"] is not None else "—"
@@ -521,7 +531,7 @@ elif view == "Patient Chart":
                     )
                     render_metric_row([
                         metric_card("Age", str(age)),
-                        metric_card("Gender", (snap["gender"] or "—").title()),
+                        metric_card("Gender", e((snap["gender"] or "—").title())),
                         metric_card("Latest BMI", bmi_value, bmi_badge(snap["bmi_category"]) if snap["bmi"] is not None else ""),
                         metric_card("Latest BP", bp_value, bp_badge(snap["latest_systolic_bp"], snap["latest_diastolic_bp"])),
                     ])
